@@ -1,4 +1,5 @@
 import {ActionGroup} from 'app/common/ActionGroup';
+import {AssistanceRequest, AssistanceResponse} from 'app/common/Assistance';
 import {BulkAddRecord, CellValue, TableDataAction, UserAction} from 'app/common/DocActions';
 import {DocStateComparison} from 'app/common/DocState';
 import {PredicateFormulaProperties} from 'app/common/PredicateFormula';
@@ -457,7 +458,7 @@ export interface ActiveDocAPI {
   /**
    * Get recent actions in ActionGroup format with summaries included.
    */
-  getActionSummaries(): Promise<ActionGroup[]>;
+  getActionSummaries(): Promise<GetActionSummariesResult>;
 
   /**
    *  Initiates user actions bandling for undo.
@@ -546,6 +547,8 @@ export interface ActiveDocAPI {
   applyProposal(proposalId: number, option?: {
     dismiss?: boolean,
   }): Promise<ApplyProposalResult>;
+
+  getAssistance(params: AssistanceRequest): Promise<AssistanceResponse>;
 }
 
 export interface ApplyProposalResult {
@@ -561,4 +564,9 @@ export interface PatchLog {
 export interface PatchItem {
   msg: string;
   fail?: boolean;
+}
+
+export interface GetActionSummariesResult {
+  actions: ActionGroup[];
+  censored: boolean;
 }

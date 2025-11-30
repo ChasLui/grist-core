@@ -191,6 +191,11 @@ export class Client {
   public interruptConnection() {
     if (this._websocket) {
       this._websocket.removeAllListeners();
+      // It is important to keep an onerror handler, since otherwise
+      // errors bring down the server.
+      this._websocket.onerror = (err: Error) => {
+        this._log.warn(null, "Error after interruption", err);
+      };
       this._websocket.terminate();  // close() is inadequate when ws routed via loadbalancer
       this._websocket = null;
     }
@@ -430,12 +435,11 @@ export class Client {
         docId: request.docId,  // caution: trusting client for docId for this purpose.
       });
       return;
-    } else {
-      this._log.info(null, "onMessage", shortDesc(message));
     }
     let response: CommResponse|CommResponseError;
     const method = this._methods.get(request.method);
     if (!method) {
+      this._log.info(null, "onMessage: unknown method", shortDesc(message));
       response = {reqId: request.reqId, error: `Unknown method ${request.method}`};
     } else {
       try {
@@ -459,6 +463,9 @@ export class Client {
         }
         if (err.details) {
           response.details = err.details;
+        }
+        if (err.status) {
+          response.status = err.status;
         }
         if (typeof code === 'string' && code === 'AUTH_NO_EDIT' && err.accessMode === 'fork') {
           response.shouldFork = true;

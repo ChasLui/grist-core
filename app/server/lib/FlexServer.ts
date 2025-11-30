@@ -65,12 +65,11 @@ import {IDocStorageManager} from 'app/server/lib/IDocStorageManager';
 import {EmitNotifier, INotifier} from 'app/server/lib/INotifier';
 import {InstallAdmin} from 'app/server/lib/InstallAdmin';
 import log, {logAsJson} from 'app/server/lib/log';
-import {disableCache} from 'app/server/lib/middleware';
+import {disableCache, noop} from 'app/server/lib/middleware';
 import {IPermitStore} from 'app/server/lib/Permit';
 import {getAppPathTo, getAppRoot, getInstanceRoot, getUnpackedAppRoot} from 'app/server/lib/places';
 import {addPluginEndpoints, limitToPlugins} from 'app/server/lib/PluginEndpoint';
 import {PluginManager} from 'app/server/lib/PluginManager';
-import * as ProcessMonitor from 'app/server/lib/ProcessMonitor';
 import { createPubSubManager, IPubSubManager } from 'app/server/lib/PubSubManager';
 import {adaptServerUrl, getOrgUrl, getOriginUrl, getScope, integerParam, isParameterOn, optIntegerParam,
         optStringParam, RequestWithGristInfo, stringArrayParam, stringParam, TEST_HTTPS_OFFSET,
@@ -127,8 +126,6 @@ export interface FlexServerOptions {
   // Global grist config options
   settings?: IGristCoreConfig;
 }
-
-const noop: express.RequestHandler = (req, res, next) => next();
 
 export class FlexServer implements GristServer {
   public readonly create = create;
@@ -204,7 +201,7 @@ export class FlexServer implements GristServer {
   private _getSignUpRedirectUrl: (req: express.Request, target: URL) => Promise<string>;
   private _getLogoutRedirectUrl: (req: express.Request, nextUrl: URL) => Promise<string>;
   private _sendAppPage: (req: express.Request, resp: express.Response, options: ISendAppPageOptions) => Promise<void>;
-  private _getLoginSystem: () => Promise<GristLoginSystem>;
+  private _getLoginSystem: (dbManager: HomeDBManager) => Promise<GristLoginSystem>;
   // Set once ready() is called
   private _isReady: boolean = false;
   private _updateManager: UpdateManager;
@@ -1056,7 +1053,7 @@ export class FlexServer implements GristServer {
     await this._telemetry.start();
 
     // Start up a monitor for memory and cpu usage.
-    this._processMonitorStop = ProcessMonitor.start(this._telemetry);
+    this._processMonitorStop = this.create.startProcessMonitor(this._telemetry);
   }
 
   public async close() {
@@ -1267,7 +1264,7 @@ export class FlexServer implements GristServer {
           // to avoid a redirect loop.
 
           if (orgInfo.billingAccount.isManager && orgInfo.billingAccount.getFeatures().vanityDomain) {
-            const prefix = isOrgInPathOnly(req.hostname) ? `/o/${mreq.org}` : '';
+            const prefix: string = isOrgInPathOnly(req.hostname) ? `/o/${mreq.org}` : '';
             return res.redirect(`${prefix}/billing/payment?billingTask=signUpLite`);
           }
         }
@@ -1306,7 +1303,7 @@ export class FlexServer implements GristServer {
   }
 
   public async addLoginMiddleware() {
-    if (this._check('loginMiddleware')) { return; }
+    if (this._check('loginMiddleware', 'homedb')) { return; }
 
     // TODO: We could include a third mock provider of login/logout URLs for better tests. Or we
     // could create a mock SAML identity provider for testing this using the SAML flow.
@@ -2146,7 +2143,7 @@ export class FlexServer implements GristServer {
 
   public resolveLoginSystem() {
     return isTestLoginAllowed() ?
-      getTestLoginSystem() : this._getLoginSystem();
+      getTestLoginSystem() : this._getLoginSystem(this.getHomeDBManager());
   }
 
   public addUpdatesCheck() {
@@ -2212,6 +2209,20 @@ export class FlexServer implements GristServer {
     return url.href;
   }
 
+  /**
+   * Returns middleware that adds information about the user to the request.
+   *
+   * Specifically, sets:
+   *   - req.userId: the id of the user in the database users table
+   *   - req.userIsAuthorized: set if user has presented credentials that were accepted
+   *     (the anonymous user has a userId but does not have userIsAuthorized set if,
+   *     as would typically be the case, credentials were not presented)
+   *   - req.users: set for org-and-session-based logins, with list of profiles in session
+   */
+  public getUserIdMiddleware(): express.RequestHandler {
+    return this._userIdMiddleware;
+  }
+
   // Adds endpoints that support imports and exports.
   private _addSupportPaths(docAccessMiddleware: express.RequestHandler[]) {
     if (!this._docWorker) { throw new Error("need DocWorker"); }
@@ -2227,7 +2238,7 @@ export class FlexServer implements GristServer {
       expressWrap(async (req, res) => this._docWorker.getAttachment(req, res)));
   }
 
-  private _check(part: string, ...precedents: Array<string|null>) {
+  private _check(part: Part, ...precedents: Array<CheckKey|null>) {
     if (this.deps.has(part)) { return true; }
     for (const precedent of precedents) {
       if (!precedent) { continue; }
@@ -2820,3 +2831,52 @@ const serveAnyOrigin: serveStatic.ServeStaticOptions = {
     res.setHeader("Access-Control-Allow-Origin", "*");
   }
 };
+
+type Part =
+  'activation'
+  | 'api'
+  | 'api-error'
+  | 'api-mw'
+  | 'assistant'
+  | 'audit-logger'
+  | 'billing-api'
+  | 'boot'
+  | 'cleanup'
+  | 'clientSecret'
+  | 'comm'
+  | 'dir'
+  | 'doc'
+  | 'doc_api_forwarder'
+  | 'early-api'
+  | 'google-auth'
+  | 'health'
+  | 'homedb'
+  | 'hosts'
+  | 'housekeeper'
+  | 'json'
+  | 'landing'
+  | 'log-endpoint'
+  | 'logging'
+  | 'login'
+  | 'loginMiddleware'
+  | 'map'
+  | 'middleware'
+  | 'notifier'
+  | 'org'
+  | 'pluginUntaggedAssets'
+  | 'router'
+  | 'scim'
+  | 'sessions'
+  | 'start'
+  | 'static_and_bower'
+  | 'strip_dw'
+  | 'tag'
+  | 'telemetry'
+  | 'testAssets'
+  | 'testinghooks'
+  | 'update'
+  | 'usage'
+  | 'webhooks'
+  | 'widgets';
+
+type CheckKey = Part | `!${Part}`;

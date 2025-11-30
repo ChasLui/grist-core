@@ -8,7 +8,7 @@ import {ICustomWidget} from 'app/common/CustomWidget';
 import {BulkColValues, TableColValues, TableRecordValue, TableRecordValues,
         TableRecordValuesWithoutIds, UserAction} from 'app/common/DocActions';
 import {DocCreationInfo, OpenDocMode} from 'app/common/DocListAPI';
-import {DocStateComparison} from 'app/common/DocState';
+import {DocStateComparison, DocStates} from 'app/common/DocState';
 import {OrgUsageSummary} from 'app/common/DocUsage';
 import {Features, Product} from 'app/common/Features';
 import {isClient} from 'app/common/gristUrls';
@@ -46,10 +46,11 @@ export const NEW_DOCUMENT_CODE = 'new';
 // Properties shared by org, workspace, and doc resources.
 export interface CommonProperties {
   name: string;
-  createdAt: string;  // ISO date string
-  updatedAt: string;  // ISO date string
-  removedAt?: string; // ISO date string - only can appear on docs and workspaces currently
-  public?: boolean;   // If set, resource is available to the public
+  createdAt: string;   // ISO date string
+  updatedAt: string;   // ISO date string
+  removedAt?: string;  // ISO date string - only can appear on docs and workspaces currently
+  disabledAt?: string; // ISO date string - only can appear on docs currently
+  public?: boolean;    // If set, resource is available to the public
 }
 export const commonPropertyKeys = ['createdAt', 'name', 'updatedAt'];
 
@@ -407,6 +408,8 @@ export interface UserAPI {
   deleteDoc(docId: string): Promise<void>;      // delete doc permanently
   softDeleteDoc(docId: string): Promise<void>;  // soft-delete doc
   undeleteDoc(docId: string): Promise<void>;    // recover soft-deleted doc
+  disableDoc(docId: string): Promise<void>;     // (admin-only) remove all access to doc except deletion
+  enableDoc(docId: string): Promise<void>;      // (admin-only) recover disabled doc
   updateOrgPermissions(orgId: number|string, delta: PermissionDelta): Promise<void>;
   updateWorkspacePermissions(workspaceId: number, delta: PermissionDelta): Promise<void>;
   updateDocPermissions(docId: string, delta: PermissionDelta): Promise<void>;
@@ -520,6 +523,7 @@ export interface DocAPI {
   // remove selected snapshots, or all snapshots that have "leaked" from inventory (should
   // be empty), or all but the current snapshot.
   removeSnapshots(snapshotIds: string[] | 'unlisted' | 'past'): Promise<{snapshotIds: string[]}>;
+  getStates(): Promise<DocStates>;
   forceReload(): Promise<void>;
   recover(recoveryMode: boolean): Promise<void>;
   // Compare two documents, optionally including details of the changes.
@@ -602,10 +606,13 @@ export interface DocAPI {
 
   makeProposal(options?: {
     retracted?: boolean,
-  }): Promise<void>;
+  }): Promise<Proposal>;
   getProposals(options?: {
     outgoing?: boolean
   }): Promise<{proposals: Proposal[]}>;
+  applyProposal(proposalId: number): Promise<Proposal>;
+
+  applyUserActions(actions: UserAction[]): Promise<ApplyUAResult>;
 }
 
 // Operations that are supported by a doc worker.
@@ -781,6 +788,14 @@ export class UserAPIImpl extends BaseAPI implements UserAPI {
 
   public async undeleteDoc(docId: string): Promise<void> {
     await this.request(`${this._url}/api/docs/${docId}/unremove`, { method: 'POST' });
+  }
+
+  public async disableDoc(docId: string): Promise<void> {
+    await this.request(`${this._url}/api/docs/${docId}/disable`, { method: 'POST' });
+  }
+
+  public async enableDoc(docId: string): Promise<void> {
+    await this.request(`${this._url}/api/docs/${docId}/enable`, { method: 'POST' });
   }
 
   public async updateOrgPermissions(orgId: number|string, delta: PermissionDelta): Promise<void> {
@@ -1110,6 +1125,10 @@ export class DocAPIImpl extends BaseAPI implements DocAPI {
     });
   }
 
+  public async getStates(): Promise<DocStates> {
+    return this.requestJson(`${this._url}/states`);
+  }
+
   public async getUsersForViewAs(): Promise<PermissionDataWithExtraUsers> {
     return this.requestJson(`${this._url}/usersForViewAs`);
   }
@@ -1315,9 +1334,22 @@ export class DocAPIImpl extends BaseAPI implements DocAPI {
   public async makeProposal(options?: {
     retracted?: boolean,
   }) {
-    await this.requestJson(`${this._url}/propose`, {
+    return this.requestJson(`${this._url}/propose`, {
       method: 'POST',
       body: JSON.stringify(options || {}),
+    });
+  }
+
+  public async applyProposal(proposalId: number) {
+    return this.requestJson(`${this._url}/proposals/${proposalId}/apply`, {
+      method: 'POST',
+    });
+  }
+
+  public async applyUserActions(actions: UserAction[]): Promise<ApplyUAResult> {
+    return this.requestJson(`${this._url}/apply`, {
+      method: 'POST',
+      body: JSON.stringify(actions)
     });
   }
 
